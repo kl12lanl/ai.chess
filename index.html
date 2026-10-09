@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Шахматы со Stockfish</title>
+    <!-- Используем надежную шахматную логику через официальный CDN -->
+    <script src="https://cloudflare.com"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #222; color: #fff; margin: 0; padding: 20px; }
+        h2 { color: #f0d9b5; margin-bottom: 5px; }
+        .status { font-size: 16px; margin-bottom: 20px; color: #aaa; min-height: 24px; }
+        .board { display: grid; grid-template-columns: repeat(8, 12.5%); grid-template-rows: repeat(8, 12.5%); width: 100%; max-width: 440px; aspect-ratio: 1 / 1; margin: 0 auto; border: 6px solid #444; border-radius: 4px; box-shadow: 0 12px 36px rgba(0,0,0,0.5); }
+        .cell { display: flex; align-items: center; justify-content: center; font-size: calc(20px + 2vw); cursor: pointer; user-select: none; }
+        @media (min-width: 440px) { .cell { font-size: 42px; } }
+        .light { background-color: #f0d9b5; }
+        .dark { background-color: #b58863; }
+        .selected { background-color: #7ab874 !important; }
+        .black-piece { color: #000; filter: drop-shadow(0px 0px 1px #fff); }
+        .white-piece { color: #fff; filter: drop-shadow(0px 0px 2px #000); }
+    </style>
+</head>
+<body>
+
+    <h2>Шахматы против Stockfish</h2>
+    <div class="status" id="game-status">Загрузка Stockfish... Ожидайте</div>
+    <div id="board" class="board"></div>
+
+<script>
+const game = new Chess();
+let selectedSquare = null;
+
+const piecesSymbols = { 'wp':'♙','wn':'♘','wb':'♗','wr':'♖','wq':'♕','wk':'♔','bp':'♟','bn':'♞','bb':'♝','br':'♜','bq':'♛','bk':'♚' };
+
+// Инициализируем Stockfish через публичный стабильный WebWorker API
+// Браузер сам скачает и запустит движок в фоновом потоке
+const stockfish = new Worker('https://cloudflare.com');
+
+stockfish.onmessage = function(event) {
+    const line = event.data;
+    
+    // Когда Stockfish находит лучший ход, он присылает строку вида "bestmove e2e4"
+    if (line.startsWith('bestmove')) {
+        const moveData = line.split(' ')[1];
+        if (moveData && moveData !== '(none)') {
+            const from = moveData.substring(0, 2);
+            const to = moveData.substring(2, 4);
+            const promotion = moveData.length > 4 ? moveData.charAt(4) : undefined;
+
+            game.move({ from, to, promotion });
+            selectedSquare = null;
+            render();
+            
+            if (game.game_over()) {
+                checkGameOver();
+            } else {
+                document.getElementById('game-status').innerText = "Ваш ход (Белые).";
+            }
+        }
+    }
+};
+
+// Отправляем базовые UCI команды для старта движка
+stockfish.postMessage('uci');
+stockfish.postMessage('isready');
+document.getElementById('game-status').innerText = "Ваш ход (Белые). Нажмите на фигуру.";
+
+function askStockfishToMove() {
+    if (game.game_over()) return;
+    
+    document.getElementById('game-status').innerText = "Stockfish думает...";
+    
+    // Передаем текущую позицию доски в формате FEN
+    stockfish.postMessage('position fen ' + game.fen());
+    
+    // Ограничиваем время размышления движка до 1 секунды (1000 мс), чтобы браузер не зависал
+    stockfish.postMessage('go movetime 1000');
+}
+
+function render() {
+    const boardDiv = document.getElementById('board');
+    boardDiv.innerHTML = '';
+    const matrix = game.board();
+
+    for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            let cell = document.createElement('div');
+            let files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+            let sq = files[c] + (8 - r);
+            
+            cell.className = 'cell ' + ((r + c) % 2 === 0 ? 'light' : 'dark');
+            if (selectedSquare === sq) cell.className += ' selected';
+            
+            let p = matrix[r][c];
+            if (p) {
+                cell.innerText = piecesSymbols[p.color + p.type];
+                cell.className += (p.color === 'w' ? ' white-piece' : ' black-piece');
+            }
+            cell.onclick = () => handleClick(sq);
+            boardDiv.appendChild(cell);
+        }
+    }
+}
+
+function handleClick(sq) {
+    if (game.turn() === 'b' || game.game_over()) return;
+    let p = game.get(sq);
+    
+    if (selectedSquare === null) {
+        if (p && p.color === 'w') {
+            selectedSquare = sq;
+            render();
+        }
+    } else {
+        // Пытаемся совершить ход игрока
+        let move = game.move({ from: selectedSquare, to: sq, promotion: 'q' });
+        
+        if (move === null) {
+            // Если ход нелегален, проверяем, выбрал ли игрок другую свою фигуру
+            selectedSquare = (p && p.color === 'w') ? sq : null;
+            render();
+        } else {
+            selectedSquare = null;
+            render();
+            
+            if (!game.game_over()) {
+                // Если игра продолжается, запускаем ход Стокфиша
+                setTimeout(askStockfishToMove, 200);
+            } else {
+                checkGameOver();
+            }
+        }
+    }
+}
+
+function checkGameOver() {
+    const statusDiv = document.getElementById('game-status');
+    if (game.in_checkmate()) statusDiv.innerText = "Мат! Игра окончена.";
+    else if (game.in_draw()) statusDiv.innerText = "Ничья!";
+}
+
+render();
+</script>
+</body>
+</html>
